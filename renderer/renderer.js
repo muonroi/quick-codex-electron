@@ -498,6 +498,11 @@ window.qc.onSessionEvent((payload) => {
       if (nextAction) {
         writeSystem(`Next action: ${nextAction}`);
       }
+      if (payload.stopReason === "ask-user" && Array.isArray(payload.clarificationOptions)) {
+        payload.clarificationOptions.forEach((option, index) => {
+          writeSystem(`Option ${index + 1}: ${option}`);
+        });
+      }
     }
     return;
   }

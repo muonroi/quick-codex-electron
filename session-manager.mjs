@@ -415,7 +415,8 @@ export class ElectronSessionManager extends EventEmitter {
       handoffAction: continuation.decision?.handoffAction ?? null,
       phaseRelation: continuation.decision?.phaseRelation ?? null,
       nativeThreadAction: continuation.decision?.nativeThreadAction ?? null,
-      continuePrompt: continuation.decision?.prompt ?? null,
+      continuePrompt: stop.prompt ?? continuation.decision?.prompt ?? null,
+      clarificationOptions: Array.isArray(stop.options) ? stop.options : null,
       checkpointSummary
     };
 
