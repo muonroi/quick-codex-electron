@@ -83,6 +83,15 @@ function writeSystem(line) {
   term.writeln(`\x1b[38;5;243m[qc]\x1b[0m ${line}`);
 }
 
+function maybeQuitTestApp(delayMs = 50) {
+  if (!testConfig?.scenario) {
+    return;
+  }
+  setTimeout(() => {
+    window.qc.quitApp().catch(() => {});
+  }, delayMs);
+}
+
 function renderKeyvals(target, rows) {
   target.innerHTML = rows.map(([key, value, tone = ""]) => {
     const safeValue = String(value ?? "");
@@ -154,6 +163,27 @@ function formatFollowAction(action) {
     return "No follow action queued.";
   }
   return normalized;
+}
+
+function formatIntentionalStopMessage(payload) {
+  const gate = String(payload?.currentGate || "").trim();
+  if (payload?.stopReason === "no-checkpoint-progress" && gate === "clarify") {
+    return "Stopped intentionally: qc-flow gate is still clarify.";
+  }
+  if (payload?.stopReason === "no-checkpoint-progress" && gate) {
+    return `Stopped intentionally: qc-flow gate is still ${gate}.`;
+  }
+  return null;
+}
+
+function resolveFollowNextAction(payload) {
+  return payload?.checkpointSummary?.prompt
+    || payload?.continuePrompt
+    || null;
+}
+
+function formatBool(value) {
+  return value ? "true" : "false";
 }
 
 function renderPanels() {
@@ -284,7 +314,7 @@ function updateUiForMode() {
   uiState.session.mode = "native codex + qc auto";
   uiState.follow.maxTurns = String(maxTurnsInput.value || 5);
   if (inputBar) {
-    inputBar.style.display = "none";
+    inputBar.style.display = "flex";
   }
   renderPanels();
   setTimeout(() => {
@@ -393,9 +423,16 @@ window.qc.onSessionEvent((payload) => {
       ? "Protocol contract is active."
       : "No enforced QC contract on this turn.";
     renderPanels();
-    writeSystem(`route=${uiState.route.route} | source=${uiState.route.source} | prompt=${uiState.route.promptSource}`);
+    writeSystem(
+      `task-route | route=${uiState.route.route} | source=${uiState.route.source} | prompt=${uiState.route.promptSource} | protocolEnforced=${formatBool(payload.protocolEnforced)}`
+    );
     if (payload.protocolEnforced) {
-      writeSystem(`protocol=${payload.protocolName} | gate=${payload.protocolGate} | artifact=${payload.protocolArtifactRun || "none"}`);
+      writeSystem(
+        `protocol | name=${payload.protocolName} | gate=${payload.protocolGate} | artifact=${payload.protocolArtifactRun || "none"}`
+      );
+      writeSystem(`Protocol prompt injected | source=${uiState.route.promptSource}`);
+      writeSystem(`Skill-equivalent: ${payload.protocolName}`);
+      writeSystem(`Gate enforced: ${payload.protocolGate || "none"}`);
     }
     return;
   }
@@ -417,13 +454,18 @@ window.qc.onSessionEvent((payload) => {
     uiState.session.model = payload.model || "default";
     uiState.session.reasoning = payload.reasoningEffort || "default";
     renderPanels();
-    writeSystem(`model=${uiState.session.model} | reasoning=${uiState.session.reasoning} | source=${payload.source || "unknown"}`);
+    writeSystem(
+      `model-route | model=${uiState.session.model} | reasoning=${uiState.session.reasoning} | source=${payload.source || "unknown"}`
+    );
     return;
   }
   if (payload.type === "session-model-ready") {
     uiState.session.model = payload.model || uiState.session.model;
     uiState.session.reasoning = payload.reasoningEffort || uiState.session.reasoning;
     renderPanels();
+    writeSystem(
+      `session-model-ready | model=${uiState.session.model} | reasoning=${uiState.session.reasoning}`
+    );
     return;
   }
   if (payload.type === "task-disambiguation") {
@@ -447,6 +489,16 @@ window.qc.onSessionEvent((payload) => {
     uiState.protocol.gate = payload.currentGate || uiState.protocol.gate;
     renderPanels();
     writeSystem(`follow=${uiState.follow.decision} | stop=${uiState.follow.stop} | phase=${uiState.follow.phase}`);
+    if (payload.shouldStop) {
+      const intentionalStop = formatIntentionalStopMessage(payload);
+      const nextAction = resolveFollowNextAction(payload);
+      if (intentionalStop) {
+        writeSystem(intentionalStop);
+      }
+      if (nextAction) {
+        writeSystem(`Next action: ${nextAction}`);
+      }
+    }
     return;
   }
   if (payload.type === "follow-loop-action") {
@@ -572,30 +624,41 @@ function applyPreInputHooks(text, source) {
 }
 
 async function sendTask() {
-  const text = taskInput?.value?.trim?.() || "";
+  const originalValue = taskInput?.value ?? "";
+  const text = originalValue.trim();
   if (!text) return;
 
   const pre = applyPreInputHooks(text, "taskbox");
   if (!pre) return;
   if (pre.handled) {
-    taskInput.value = "";
-    return;
-  }
-
-  if (ACTIVE_MODE !== "orchestrated") {
-    writeSystem("Task box is only used in orchestrated mode.");
     if (taskInput) {
       taskInput.value = "";
     }
     return;
   }
 
-  if (!sessionStarted) {
-    await startSession();
-  }
-  await window.qc.submitTask(pre.text);
   if (taskInput) {
     taskInput.value = "";
+  }
+  try {
+    if (!sessionStarted) {
+      await startSession();
+    }
+
+    if (ACTIVE_MODE === "passthrough") {
+      writeSystem("composer=passthrough intercept");
+      await window.qc.submitInterceptedTask(pre.text);
+    } else {
+      writeSystem("composer=orchestrated taskbox");
+      await window.qc.submitTask(pre.text);
+    }
+
+    focusTerminal();
+  } catch (error) {
+    if (taskInput && !taskInput.value) {
+      taskInput.value = originalValue;
+    }
+    throw error;
   }
 }
 
@@ -820,7 +883,25 @@ window.qc.getTestConfig().then(async (response) => {
   }
   maxTurnsInput.value = String(testConfig.maxTurns || 3);
   updateUiForMode();
+  if (testConfig.autoQuitMs) {
+    setTimeout(() => {
+      if (testConfig?.scenario) {
+        window.qc.quitApp().catch(() => {});
+      }
+    }, testConfig.autoQuitMs);
+  }
   await startSession();
+  if (testConfig.taskboxInput && taskInput) {
+    taskInput.value = testConfig.taskboxInput;
+    setTimeout(() => {
+      sendTask().catch((e) => {
+        writeSystem(`send failed: ${e.message}`);
+        if (testConfig?.quitOnSendError) {
+          maybeQuitTestApp();
+        }
+      });
+    }, 50);
+  }
   maybeRunTestScenario();
 }).catch((e) => {
   writeSystem(`test-config failed: ${e.message}`);
@@ -831,8 +912,9 @@ window.qc.onSessionEvent((payload) => {
     maybeRunTestScenario();
   }
   if (testConfig?.quitOnFollowFinished && payload?.type === "follow-loop-finished") {
-    setTimeout(() => {
-      window.qc.quitApp().catch(() => {});
-    }, 50);
+    maybeQuitTestApp();
+  }
+  if (testConfig?.quitOnTaskResult && payload?.type === "task-result") {
+    maybeQuitTestApp();
   }
 });

@@ -307,6 +307,18 @@ const scenarioDefinitions = {
         }
       ]
     })
+  },
+  "taskbox-live-repro": {
+    config: {
+      scenario: "taskbox-live-repro",
+      mode: "passthrough",
+      maxTurns: 1,
+      taskboxInput: "I have a repository called Storyflow. Please explore it and review its anti-bot feature. I also have two Strong Crawler repositories (D:\\Personal\\Core\\_tmp\\antibot-research) — use them as a basis for evaluation.",
+      quitOnTaskResult: true,
+      quitOnSendError: true,
+      autoQuitMs: 45000
+    },
+    useRealSessionManager: true
   }
 };
 
@@ -317,8 +329,10 @@ export function resolveElectronTestScenario(name) {
   }
   return {
     config: definition.config,
-    sessionManager: new ElectronSessionManager({
-      hostApi: definition.hostApi
-    })
+    sessionManager: definition.useRealSessionManager
+      ? new ElectronSessionManager()
+      : new ElectronSessionManager({
+          hostApi: definition.hostApi
+        })
   };
 }
